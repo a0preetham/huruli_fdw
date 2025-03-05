@@ -31,3 +31,4 @@ To get started, visit the [Wasm FDW developing guide](https://fdw.dev/guides/cre
 ## License
 
 [Apache License Version 2.0](./LICENSE)
+.
