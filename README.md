@@ -1,4 +1,6 @@
-# Postgres Wasm FDW [Template]
+# Huruli FDW
+
+See [Documentation](https://fdw.dev/docs/create-wasm-wrapper/).
 
 This project demostrates how to create a Postgres Foreign Data Wrapper with Wasm, using the [Wrappers framework](https://github.com/supabase/wrappers).
 
