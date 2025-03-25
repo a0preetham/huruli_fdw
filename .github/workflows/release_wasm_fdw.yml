@@ -1,10 +1,9 @@
 name: Release
 
-
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+' # Push events to matching wasm fdw tag, i.e. v1.0.2
+      - "v[0-9]+.[0-9]+.[0-9]+" # Push events to matching wasm fdw tag, i.e. v1.0.2
 
 permissions:
   contents: write
@@ -79,38 +78,51 @@ jobs:
           cat > README.txt <<EOF
           To use this Wasm foreign data wrapper on Supabase, create a foreign table like below,
 
-          create extension if not exists wrappers with schema extensions;
+          drop extension wrappers cascade;
+          drop schema gmail cascade;
+          create schema if not exists gmail;
 
-          create foreign data wrapper wasm_wrapper
-            handler wasm_fdw_handler
-            validator wasm_fdw_validator;
 
-          create server example_server
-            foreign data wrapper wasm_wrapper
-            options (
-              fdw_package_url 'https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/${PROJECT}.wasm',
+          create extension if not exists wrappers;
+          create foreign data wrapper wasm_wrapper handler wasm_fdw_handler validator wasm_fdw_validator;
+
+          create server huruli_server foreign data wrapper wasm_wrapper options (              fdw_package_url 'https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/${PROJECT}.wasm',
               fdw_package_name '${PACKAGE}',
               fdw_package_version '${VERSION}',
               fdw_package_checksum '${CHECKSUM}',
-              api_url 'https://api.github.com'
+              api_url 'https://huruli.preetham.workers.dev'
             );
 
-          create schema github;
-
-          create foreign table github.events (
-            id text,
-            type text,
-            actor jsonb,
-            repo jsonb,
-            payload jsonb,
-            public boolean,
-            created_at timestamp
-          )
-            server example_server
-            options (
-              object 'events',
-              rowid_column 'id'
+            create foreign table gmail.emails_fdw (
+                "EmailID" text,
+                "FromRaw" text,
+                "FromEmail" text,
+                "ToRaw" text,
+                "ToEmails" text,
+                "Subject" text,
+                "Snippet" text,
+                "BodyText" text,
+                "Date" timestamp,
+                "BodyHtml" text
+                -- attachments: ParsedAttachment[];
+            ) server huruli_server options (
+                api_url 'https://huruli.preetham.workers.dev',
+                object 'emails',
+                api_key 'XXXX',
+                connection_id 'XXXX'
             );
+
+            create view gmail.emails as
+            select
+                "EmailID",
+                "FromEmail",
+                "ToRaw",
+                "Subject",
+                "Snippet",
+                "Date"
+            from
+                gmail.emails_fdw;
+
 
           For more details, please visit https://fdw.dev.
           EOF
@@ -125,4 +137,3 @@ jobs:
             README.txt
             checksum.txt
             ./target/wasm32-unknown-unknown/release/*.wasm
-

@@ -6,7 +6,7 @@ use bindings::{
     supabase::wrappers::{
         http,
         types::{Cell, Context, FdwError, FdwResult, OptionsType, Row, TypeOid},
-        utils::{self, report_warning},
+        utils::{self, report_info},
     },
 };
 use serde_derive::{Deserialize, Serialize};
@@ -18,19 +18,24 @@ struct HuruliFdw {
     api_key: String,
     cid: String,
     object: String,
-    src_rows: Vec<String>,
+    src_rows: Vec<Vec<Value>>,
+    columns: Vec<String>,
+    key_col_idx: usize,
     src_idx: usize,
 }
 
 #[allow(non_snake_case)]
 #[derive(Debug, Serialize, Deserialize)]
-struct ListRowsRequest {}
+struct ListRowsRequest {
+    columns: Vec<String>,
+}
 
 #[allow(non_snake_case)]
 #[derive(Debug, Serialize, Deserialize)]
 struct ListRowsResponse {
     columns: Vec<String>,
     rows: Vec<Vec<Value>>,
+    values: Vec<Vec<Value>>,
 }
 
 #[allow(non_snake_case)]
@@ -81,7 +86,7 @@ impl HuruliFdw {
         unsafe { &mut (*INSTANCE) }
     }
 
-    fn list_rows(&self) -> Result<(), String> {
+    fn list_rows(&self, columns: &Vec<String>) -> Result<(), String> {
         let this = Self::this_mut();
 
         this.src_rows.clear();
@@ -93,16 +98,18 @@ impl HuruliFdw {
         let object = &this.object;
 
         let url = format!("{}/fdw/connections/{}/tables/{}/rows", host, cid, object);
-        report_warning(&url);
+        report_info(&url);
 
-        report_warning(format!("key {:#?}", api_key).as_str());
+        report_info(format!("key {:#?}", api_key).as_str());
 
         let headers: Vec<(String, String)> = vec![
             ("user-agent".to_owned(), "Huruli FDW".to_owned()),
             ("authorization".to_owned(), format!("Bearer {}", api_key)),
         ];
 
-        let req_body = ListRowsRequest {};
+        let req_body = ListRowsRequest {
+            columns: columns.clone(),
+        };
 
         let req = http::Request {
             method: http::Method::Post,
@@ -112,21 +119,17 @@ impl HuruliFdw {
         };
 
         let resp = http::post(&req)?;
-        report_warning(format!("{:#?}", &resp.body).as_str());
+        report_info(format!("{:#?}", &resp.body).as_str());
         let resp_json =
             serde_json::from_str::<ListRowsResponse>(&resp.body).map_err(|e| e.to_string())?;
 
         println!("list_rows response: {:?}", resp_json);
 
-        this.src_rows = resp_json
-            .rows
-            .iter()
-            .filter_map(|v| v.get(0))
-            .filter_map(|value| match value {
-                Value::String(s) => Some(s.clone()),
-                _ => Some(value.to_string()),
-            })
-            .collect();
+        this.src_rows = resp_json.values;
+
+        this.columns = resp_json.columns.clone();
+        this.key_col_idx = this.columns.iter().position(|c| c == "EmailID").unwrap();
+        this.src_idx = 0;
 
         Ok(())
     }
@@ -143,7 +146,7 @@ impl HuruliFdw {
             "{}/fdw/connections/{}/tables/{}/rows/{}",
             host, cid, object, row_id
         );
-        report_warning(format!("key {:#?}", api_key).as_str());
+        report_info(format!("key {:#?}", api_key).as_str());
 
         let headers: Vec<(String, String)> = vec![
             ("user-agent".to_owned(), "Huruli FDW".to_owned()),
@@ -174,7 +177,7 @@ impl HuruliFdw {
     }
 
     fn map_value_to_cell(&self, type_oid: TypeOid, value: &Value) -> Option<Cell> {
-        report_warning(format!("val {:#?} - {:#?}", type_oid, value).as_str());
+        report_info(format!("val {:#?} - {:#?}", type_oid, value).as_str());
         let cell = match type_oid {
             TypeOid::Bool => value.as_bool().map(Cell::Bool),
             TypeOid::String => value.as_str().map(|v| Cell::String(v.to_owned())),
@@ -189,6 +192,41 @@ impl HuruliFdw {
 
         return cell;
     }
+
+    // fn iter_scan_old(ctx: &Context, row: &Row) -> Result<Option<u32>, FdwError> {
+    //     let this = Self::this_mut();
+
+    //     if this.src_idx >= this.src_rows.len() {
+    //         return Ok(None);
+    //     }
+
+    //     let row_id = &this.src_rows[this.src_idx];
+
+    //     let resp = this.get_row(
+    //         row_id,
+    //         &ctx.get_columns()
+    //             .iter()
+    //             .map(|c| c.name())
+    //             .collect::<Vec<String>>(),
+    //     )?;
+
+    //     for tgt_col in ctx.get_columns() {
+    //         let tgt_col_name = tgt_col.name();
+
+    //         let col_idx = resp.columns.iter().position(|v| v.eq(&tgt_col_name));
+
+    //         if let Some(col_idx) = col_idx {
+    //             let src = &resp.values[col_idx];
+    //             row.push(this.map_value_to_cell(tgt_col.type_oid(), src).as_ref());
+    //         } else {
+    //             row.push(None);
+    //         }
+    //     }
+
+    //     this.src_idx += 1;
+
+    //     Ok(Some(0))
+    // }
 }
 
 impl Guest for HuruliFdw {
@@ -222,7 +260,12 @@ impl Guest for HuruliFdw {
         this.cid = opts.require_or("connection_id", this.cid.as_str());
         this.object = opts.require_or("object", this.object.as_str());
 
-        this.list_rows()?;
+        this.list_rows(
+            &ctx.get_columns()
+                .iter()
+                .map(|c| c.name())
+                .collect::<Vec<String>>(),
+        )?;
 
         utils::report_info(&format!(
             "We got response array length: {}",
@@ -231,31 +274,21 @@ impl Guest for HuruliFdw {
 
         Ok(())
     }
-
     fn iter_scan(ctx: &Context, row: &Row) -> Result<Option<u32>, FdwError> {
         let this = Self::this_mut();
-
         if this.src_idx >= this.src_rows.len() {
             return Ok(None);
         }
 
-        let row_id = &this.src_rows[this.src_idx];
-
-        let resp = this.get_row(
-            row_id,
-            &ctx.get_columns()
-                .iter()
-                .map(|c| c.name())
-                .collect::<Vec<String>>(),
-        )?;
+        let remote_row = &this.src_rows[this.src_idx];
 
         for tgt_col in ctx.get_columns() {
             let tgt_col_name = tgt_col.name();
 
-            let col_idx = resp.columns.iter().position(|v| v.eq(&tgt_col_name));
+            let col_idx = this.columns.iter().position(|v| v.eq(&tgt_col_name));
 
             if let Some(col_idx) = col_idx {
-                let src = &resp.values[col_idx];
+                let src = &remote_row[col_idx];
                 row.push(this.map_value_to_cell(tgt_col.type_oid(), src).as_ref());
             } else {
                 row.push(None);
